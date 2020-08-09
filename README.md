@@ -5,13 +5,15 @@
 ### 进行中
 
 * 并发编程
-* InnoDB
+* Spring AOP
 
 ### 已完成
 
 * Apache Kafka实战
 * Netty
 * Spring Transaction
+* Spring MVC
+* InnoDB
 
 ### 持续更新
 
