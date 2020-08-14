@@ -6,6 +6,7 @@
 
 * 并发编程
 * Spring AOP
+* 深入理解Apache Dubbo与实战
 
 ### 已完成
 
