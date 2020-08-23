@@ -15,6 +15,7 @@
 * Spring Transaction
 * Spring MVC
 * InnoDB
+* Redis设计与实现
 
 ### 持续更新
 
