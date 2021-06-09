@@ -1,4 +1,4 @@
-### ExtensionLoader获取DubboProtocol
+## ExtensionLoader
 
 ExtensionLoader的经典使用方法
 
@@ -17,7 +17,7 @@ ExtensionLoader protocolLoader = ExtensionLoader.getExtensionLoader(Protocol.cla
 protocolLoader.getExtension(DubboProtocol.NAME);
 ```
 
-#### 1. 获取ExtensionLoader
+### 1. 获取ExtensionLoader
 
 将两步操作分开来看可能会更加清楚，首先第一步是根据Dubbo SPI机制，获取到扩展点的入口类ExtensionLoader，而ExtensionLoader是基于某个扩展点（接口）的，因此入参是对应的扩展类class。
 
@@ -67,7 +67,7 @@ protocolLoader.getExtension(DubboProtocol.NAME);
 
 其中getAdaptiveExtension()方法用于加载自适应扩展点，这个后面再提，其主要的功能就是加载一个默认/自适应的扩展类。
 
-#### 2. 通过ExtensionLoader获取扩展点
+### 2. 获取扩展点实现
 
 成功获取到对应扩展点的ExtensionLoader后，调用其 **getExtension(String)** 方法获取到具体的扩展点。
 
@@ -134,9 +134,11 @@ private T createExtension(String name) {
     }
 ```
 
-在创建扩展类实例的过程中，有一步很重要，就是第一步获取对应的扩展点实现类 **getExtensionClassed()**，这个方法在整个dubbo流程中到处都被使用，因为这一步涉及到加载扩展点的配置文件。
+#### 1. 加载配置扩展点实现
 
-同样是全局缓存，通过双检锁进行 **loadExtensionClasses()** 操作。
+在创建扩展类实例的过程中，有一步很重要，就是第一步获取对应的扩展点实现类 **getExtensionClasses()**，这个方法在整个dubbo流程中到处都被使用，因为这一步涉及到加载扩展点的配置文件。
+
+同样是全局缓存，通过双检锁进行 **loadExtensionClasses()** 操作，该操作在Dubbo的整个流程中只会执行一次。
 
 ```java
     private Map<String, Class<?>> getExtensionClasses() {
@@ -175,7 +177,7 @@ loadExtensionClasses()方法分两步。第一步加载默认扩展点实现，�
     }
 ```
 
-先看加载默认扩展点实现，从扩展点接口上获取SPI注解，该注解有一个value属性标识该扩展点的默认实现方式，当然也可以为空，具体 的可以看@SPI接口的注释。
+先看加载默认扩展点实现，从扩展点接口上获取SPI注解，该注解有一个value属性标识该扩展点的默认实现方式，当然也可以为空，具体的可以看@SPI接口的注释。
 
 ```java
     private void cacheDefaultExtensionName() {
@@ -206,7 +208,7 @@ loadExtensionClasses()方法分两步。第一步加载默认扩展点实现，�
 2. META-INF/dubbo/internal/
 3. META-INF/services/
 
-从 **loadDirectory** 方法往下翻，里面比较重要的就是 **loadClass** 方法，
+从 **loadDirectory** 方法往下翻，里面比较重要的就是 **loadClass** 方法，首先缓存标注了自适应实现类的Wrapper代理类，如果都不是，则缓存为 *cachedActivates* 的类，并放在Map中返回。
 
 ```java
     private void loadClass(Map<String, Class<?>> extensionClasses, java.net.URL resourceURL, Class<?> clazz, String name) throws NoSuchMethodException {
@@ -223,7 +225,6 @@ loadExtensionClasses()方法分两步。第一步加载默认扩展点实现，�
         else if (isWrapperClass(clazz)) {
             cacheWrapperClass(clazz);
         }
-        // 
         else {
             clazz.getConstructor();
             if (StringUtils.isEmpty(name)) {
@@ -235,6 +236,7 @@ loadExtensionClasses()方法分两步。第一步加载默认扩展点实现，�
 
             String[] names = NAME_SEPARATOR.split(name);
             if (ArrayUtils.isNotEmpty(names)) {
+                // 缓存用户配置文件激活扩展点实现类
                 cacheActivateClass(clazz, names[0]);
                 for (String n : names) {
                     cacheName(clazz, n);
@@ -245,5 +247,83 @@ loadExtensionClasses()方法分两步。第一步加载默认扩展点实现，�
     }
 ```
 
+#### 2. 缓存实例查询
 
+通过第一步获取到的class获取到实例对象，同样通过全局缓存进行了优化。
+
+#### 3. 依赖注入
+
+依赖注入的步骤有两步：
+
+1. 知道依赖的对象
+2. 获取到依赖的实例
+
+注入依赖的过程中获取依赖属性的方式是通过遍历扩展点实现中的setter方法，获取到依赖的名称。
+
+在获取ExtensionLoader中，我们看到在构造函数里有指定objectFactory，通过ExtensionFactory获取到依赖的实例对象。
+
+
+
+```java
+    private T injectExtension(T instance) {
+
+        // 在构造器中指定，除了ExtensionFactory的ExtensionLoader外，都有objectFactory进行依赖扩展点的获取
+        if (objectFactory == null) {
+            return instance;
+        }
+
+        try {
+            // 遍历每个方法查看是否需要进行依赖注入
+            for (Method method : instance.getClass().getMethods()) {
+                // 1. 必须是setter注入
+                if (!isSetter(method)) {
+                    continue;
+                }
+                /**
+                 * Check {@link DisableInject} to see if we need auto injection for this property
+                 */
+                if (method.getAnnotation(DisableInject.class) != null) {
+                    continue;
+                }
+                Class<?> pt = method.getParameterTypes()[0];
+                if (ReflectUtils.isPrimitives(pt)) {
+                    continue;
+                }
+
+                try {
+                    // 2. 从setter方法中获取依赖的名称，并通过objectFactory获取到对应的扩展点实现
+                    String property = getSetterProperty(method);
+                    Object object = objectFactory.getExtension(pt, property);
+                    if (object != null) {
+                        method.invoke(instance, object);
+                    }
+                } catch (Exception e) {
+                    logger.error("Failed to inject via method " + method.getName()
+                            + " of interface " + type.getName() + ": " + e.getMessage(), e);
+                }
+
+            }
+        } catch (Exception e) {
+            logger.error(e.getMessage(), e);
+        }
+        return instance;
+    }
+```
+
+
+
+至此ExtensionLoader获取流程结束，此时在ExtensionLoader类中已经准备好了对应的扩展点加站，并缓存在全局缓存中。
+
+```java
+    // 对应类型的ExtensionLoader
+    private static final ConcurrentMap<Class<?>, ExtensionLoader<?>> EXTENSION_LOADERS = new ConcurrentHashMap<>();
+    // 对应类型的扩展点实例对象
+    private static final ConcurrentMap<Class<?>, Object> EXTENSION_INSTANCES = new ConcurrentHashMap<>();
+```
+
+## Adaptive
+
+除了 **ExtensionLoader.getExtensionLoader(Protocol.class).getExtension(DubboProtocol.NAME)** ，指定扩展点名称加载外，还有 **getAdaptiveExtension()** 方法，该方法获取的是自适应扩展点实现。
+
+Adaptive机制有两个作用，一是固定默认的实现（标记在类上），二是根据URL进行动态加载扩展点的实现（标记在方法上）
 
